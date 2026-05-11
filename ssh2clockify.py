@@ -156,16 +156,13 @@ def iter_sessions(
         yield sess
 
 
-def build_description(sess: Session, template: str | None) -> str:
-    if template:
-        return template.format(
-            tty=sess.tty,
-            host=sess.host or "",
-            start=sess.start.isoformat(),
-            duration_min=sess.duration_minutes,
-        )
-    host = sess.host or "local"
-    return f"SSH/login {sess.tty} ({host})"
+def build_description(sess: Session, template: str) -> str:
+    return template.format(
+        tty=sess.tty,
+        host=sess.host or "",
+        start=sess.start.isoformat(),
+        duration_min=sess.duration_minutes,
+    )
 
 
 def write_clockify_csv(
@@ -183,18 +180,20 @@ def write_clockify_csv(
     billable: str,
     description_template: str | None,
 ) -> None:
-    fieldnames = [
-        "Email",
-        "Start date",
-        "Start time",
-        "Duration",
-        "Project",
-        "Client",
-        "Task",
-        "Description",
-        "Tag",
-        "Billable",
-    ]
+    fieldnames = ["Email", "Start date", "Start time", "Duration"]
+    if project:
+        fieldnames.append("Project")
+    if client:
+        fieldnames.append("Client")
+    if task:
+        fieldnames.append("Task")
+    if description_template is not None:
+        fieldnames.append("Description")
+    if tag:
+        fieldnames.append("Tag")
+    if billable:
+        fieldnames.append("Billable")
+
     writer = csv.DictWriter(out, fieldnames=fieldnames, lineterminator="\n")
     writer.writeheader()
     for sess in sessions:
@@ -203,20 +202,25 @@ def write_clockify_csv(
             if duration_clock
             else format_duration_decimal(sess.duration_minutes)
         )
-        writer.writerow(
-            {
-                "Email": email,
-                "Start date": sess.start.strftime(date_fmt),
-                "Start time": sess.start.strftime(time_fmt),
-                "Duration": dur,
-                "Project": project,
-                "Client": client,
-                "Task": task,
-                "Description": build_description(sess, description_template),
-                "Tag": tag,
-                "Billable": billable,
-            }
-        )
+        row: dict[str, str] = {
+            "Email": email,
+            "Start date": sess.start.strftime(date_fmt),
+            "Start time": sess.start.strftime(time_fmt),
+            "Duration": dur,
+        }
+        if project:
+            row["Project"] = project
+        if client:
+            row["Client"] = client
+        if task:
+            row["Task"] = task
+        if description_template is not None:
+            row["Description"] = build_description(sess, description_template)
+        if tag:
+            row["Tag"] = tag
+        if billable:
+            row["Billable"] = billable
+        writer.writerow(row)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -305,10 +309,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument(
         "--description-template",
-        default="",
+        default=None,
+        metavar="TEMPLATE",
         help=(
-            "Python format string for Description; keys: {tty},{host},{start},{duration_min}. "
-            "Default describes tty and host."
+            "If set, add a Description column using this Python format string "
+            "(keys: {tty},{host},{start},{duration_min}). Omit the column by default."
         ),
     )
     p.add_argument(
@@ -326,7 +331,7 @@ def main(argv: list[str] | None = None) -> int:
         p.error(f"Invalid --last-args: {e}")
 
     tty_re = re.compile(args.tty_regex) if args.tty_regex else None
-    desc_tpl = args.description_template or None
+    desc_tpl = args.description_template
 
     text = run_last(
         last_bin=args.last_bin,
