@@ -1,113 +1,101 @@
 # ssh2clockify
 
-Small helper that reads your [`last(1)`](https://man7.org/linux/man-pages/man1/last.1.html) login history and writes a **CSV** you can import into **Clockify** as timesheets.
+Small helper that reads your [`last(1)`](https://man7.org/linux/man-pages/man1/last.1.html) login history and writes a **CSV** with **Start Date**, **Start Time**, **End Date**, **End Time**, and **Duration (h)** in a spreadsheet-friendly layout (US-style dates, 12-hour times with seconds, duration as `HH:MM:SS`).
 
-Clockify’s column rules and import flow are documented here: [Import data into Clockify](https://clockify.me/help/getting-started/import-timesheets).
+You can add **`--email`** when you need a leading **Email** column (e.g. [Clockify timesheet import](https://clockify.me/help/getting-started/import-timesheets)); Clockify’s docs focus on start + duration, so confirm their importer accepts your column set before a large upload.
 
 ## Requirements
 
 - **Python 3** (stdlib only; no `pip install` needed)
 - **`last`** from util-linux (typical on Linux)
-- A Clockify workspace where **timesheet CSV import** is available on your plan, and an **active** user whose **email** matches the `--email` you pass
 
 ## Quick start
 
 ```bash
 chmod +x ssh2clockify.py
+./ssh2clockify.py -o sessions.csv
+```
+
+Default columns:
+
+| Column | Default format |
+|--------|----------------|
+| **Start Date** | `MM/DD/YYYY` (`%m/%d/%Y`) |
+| **Start Time** | `HH:MM:SS AM/PM` (`%I:%M:%S %p`) |
+| **End Date** | same as start date |
+| **End Time** | same as start time |
+| **Duration (h)** | `HH:MM:SS` (from `last`’s session length; minute resolution, seconds are `:00`) |
+
+End date/time are **start + duration** (correct across midnight).
+
+Omit **End Date** and **End Time**:
+
+```bash
+./ssh2clockify.py --omit-end-datetime -o sessions.csv
+```
+
+Clockify-style file with **Email** first:
+
+```bash
 ./ssh2clockify.py --email you@company.com -o timesheets.csv
 ```
 
-Then in Clockify: **Workspace settings → Import**, upload the CSV, and confirm date/time formats when prompted.
-
-Match **Start date**, **Start time**, and **Duration** to your **profile and workspace** settings (same as Clockify’s import article). This tool defaults to:
-
-- **Start date:** `MM/DD/YYYY` (`%m/%d/%Y`)
-- **Start time:** 24-hour `HH:MM` (`%H:%M`)
-- **Duration:** clock form `HH:MM` (zero-padded), unless you pass `--duration-decimal`
-
 ## What gets imported
 
-- Only lines that include a **session length in parentheses** at the end, e.g. `(01:23)` or `(2+23:21)`, are turned into rows. Entries like **`gone - no logout`** with **no** duration are **skipped**.
-- By default, sessions **shorter than 5 minutes** are **skipped** (change with `--min-duration-minutes`).
-- By default, `last` is run as: `last -w -F -n 5000 <your unix login>`.  
-  `-w` / `-F` improve parsing (wide fields, full timestamps).
+- Only lines that include a **session length in parentheses** at the end, e.g. `(01:23)` or `(2+23:21)`, become rows. Entries like **`gone - no logout`** with **no** duration are **skipped**.
+- By default, sessions **shorter than 5 minutes** are **skipped** (`--min-duration-minutes`).
+- By default, `last` is run as: `last -w -F -n 5000 <your unix login>`.
+
+Optional columns (**Project**, **Client**, **Task**, **Description**, **Tag**, **Billable**) are added only when you pass the matching flags.
 
 ## Examples
 
 SSH-oriented TTYs only (`pts/…`):
 
 ```bash
-./ssh2clockify.py --email you@company.com --tty-regex '^pts/' -o ssh.csv
+./ssh2clockify.py --tty-regex '^pts/' -o ssh.csv
 ```
 
-Drop very short sessions and cap how much history `last` returns:
+European date order:
 
 ```bash
-./ssh2clockify.py --email you@company.com --min-duration-minutes 10 -n 2000 -o out.csv
+./ssh2clockify.py --date-format '%d/%m/%Y' -o out.csv
 ```
 
-European date order in the CSV:
+24-hour times:
 
 ```bash
-./ssh2clockify.py --email you@company.com --date-format '%d/%m/%Y' -o out.csv
+./ssh2clockify.py --time-format '%H:%M:%S' -o out.csv
 ```
 
-12-hour times in the CSV:
+Custom `last` invocation:
 
 ```bash
-./ssh2clockify.py --email you@company.com --time-format '%I:%M %p' -o out.csv
-```
-
-Decimal hours for duration (if your workspace uses decimal duration):
-
-```bash
-./ssh2clockify.py --email you@company.com --duration-decimal -o out.csv
-```
-
-Custom `last` invocation (e.g. alternate wtmp):
-
-```bash
-./ssh2clockify.py --email you@company.com --last-args '-w -F -f /var/log/wtmp' -o out.csv
-```
-
-Tag every row and set a project name:
-
-```bash
-./ssh2clockify.py --email you@company.com --project "Admin" --tag "SSH" -o out.csv
-```
-
-Custom **Description** (Python `str.format` fields: `{tty}`, `{host}`, `{start}`, `{duration_min}`):
-
-```bash
-./ssh2clockify.py --email you@company.com \
-  --description-template 'Login {tty} from {host}, {duration_min} min' -o out.csv
+./ssh2clockify.py --last-args '-w -F -f /var/log/wtmp' -o out.csv
 ```
 
 ## Options
-
-Run:
 
 ```bash
 ./ssh2clockify.py --help
 ```
 
-for the full list. Common flags:
-
 | Flag | Purpose |
 |------|--------|
-| `--email` | Clockify user email (**required**) |
-| `-u` / `--user` | Unix login passed to `last` (default: current user) |
-| `--min-duration-minutes` | Minimum session length to include (default: `5`) |
+| `--email` | Prepend **Email** column (optional; for tools that expect it) |
+| `--omit-end-datetime` | Drop **End Date** and **End Time** |
+| `-u` / `--user` | Unix login for `last` (default: current user) |
+| `--min-duration-minutes` | Minimum session length (default: `5`) |
 | `-n` / `--limit` | `last -n` limit (default: `5000`; `0` = no limit) |
-| `--tty-regex` | Only include TTYs matching this regex |
-| `--date-format` / `--time-format` | `strftime` formats for CSV columns |
-| `--duration-decimal` | Duration as decimal hours instead of `HH:MM` |
-| `--project`, `--client`, `--task`, `--tag`, `--billable` | Optional Clockify columns |
+| `--tty-regex` | Only include matching TTYs |
+| `--date-format` / `--time-format` | `strftime` for date/time columns |
+| `--project`, `--client`, `--task`, `--tag`, `--billable` | Optional columns when non-empty |
+| `--description-template` | Add **Description** (`{tty}`, `{host}`, `{start}`, `{duration_min}`) |
 | `-o` / `--output` | Output file (`-` = stdout) |
-| `--last-bin`, `--last-args` | Control how `last` is invoked |
+| `--last-bin`, `--last-args` | How `last` is invoked |
 
 ## Caveats
 
-- **Clockify does not dedupe** CSV imports; review the file before uploading.
-- **Timesheet import** may require a **paid** Clockify plan; see their help article.
-- **Permissions:** reading login history may require your user to have access to the wtmp data `last` uses (normal for your own user on many systems).
+- **`last`** only gives duration to the **minute**; **Duration (h)** uses seconds `00` after the minutes.
+- **Clockify** may expect different header names or only **start + duration**; align with their current import UI.
+- Reading wtmp may require appropriate permissions on your system.

@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """
-Convert `last(1)` session lines for a user into a CSV suitable for Clockify
-timesheet import (see https://clockify.me/help/getting-started/import-timesheets).
+Convert `last(1)` login history into a CSV: Start Date, Start Time, End Date,
+End Time, and Duration (h) as HH:MM:SS (defaults match common US spreadsheet
+templates). Use --omit-end-datetime to drop the end columns.
 
 Typical usage:
-  ./ssh2clockify.py --email you@company.com > clockify_timesheets.csv
+  ./ssh2clockify.py -o sessions.csv
+  ./ssh2clockify.py --email you@company.com -o clockify_timesheets.csv
 
 Requires util-linux `last` with session lines that include a duration in parentheses
 for completed sessions (e.g. from `last -w -F`).
@@ -20,7 +22,7 @@ import shlex
 import subprocess
 import sys
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Iterable, Iterator, Sequence
 
 
@@ -130,13 +132,12 @@ def run_last(
     return proc.stdout
 
 
-def format_duration_clock(total_minutes: int) -> str:
-    h, m = divmod(total_minutes, 60)
-    return f"{h:02d}:{m:02d}"
-
-
-def format_duration_decimal(total_minutes: int) -> str:
-    return f"{total_minutes / 60:.4f}".rstrip("0").rstrip(".")
+def format_duration_hms(total_minutes: int) -> str:
+    """Duration as HH:MM:SS (from whole minutes; seconds are 00)."""
+    total_seconds = total_minutes * 60
+    h, rem = divmod(total_seconds, 3600)
+    m, s = divmod(rem, 60)
+    return f"{h:02d}:{m:02d}:{s:02d}"
 
 
 def iter_sessions(
@@ -165,14 +166,14 @@ def build_description(sess: Session, template: str) -> str:
     )
 
 
-def write_clockify_csv(
+def write_timesheet_csv(
     sessions: Iterable[Session],
     *,
     out,
-    email: str,
+    email: str | None,
     date_fmt: str,
     time_fmt: str,
-    duration_clock: bool,
+    omit_end_datetime: bool,
     project: str,
     client: str,
     task: str,
@@ -180,7 +181,13 @@ def write_clockify_csv(
     billable: str,
     description_template: str | None,
 ) -> None:
-    fieldnames = ["Email", "Start date", "Start time", "Duration"]
+    fieldnames: list[str] = []
+    if email:
+        fieldnames.append("Email")
+    fieldnames.extend(["Start Date", "Start Time"])
+    if not omit_end_datetime:
+        fieldnames.extend(["End Date", "End Time"])
+    fieldnames.append("Duration (h)")
     if project:
         fieldnames.append("Project")
     if client:
@@ -197,17 +204,17 @@ def write_clockify_csv(
     writer = csv.DictWriter(out, fieldnames=fieldnames, lineterminator="\n")
     writer.writeheader()
     for sess in sessions:
-        dur = (
-            format_duration_clock(sess.duration_minutes)
-            if duration_clock
-            else format_duration_decimal(sess.duration_minutes)
-        )
-        row: dict[str, str] = {
-            "Email": email,
-            "Start date": sess.start.strftime(date_fmt),
-            "Start time": sess.start.strftime(time_fmt),
-            "Duration": dur,
-        }
+        dur = format_duration_hms(sess.duration_minutes)
+        end = sess.start + timedelta(minutes=sess.duration_minutes)
+        row: dict[str, str] = {}
+        if email:
+            row["Email"] = email
+        row["Start Date"] = sess.start.strftime(date_fmt)
+        row["Start Time"] = sess.start.strftime(time_fmt)
+        if not omit_end_datetime:
+            row["End Date"] = end.strftime(date_fmt)
+            row["End Time"] = end.strftime(time_fmt)
+        row["Duration (h)"] = dur
         if project:
             row["Project"] = project
         if client:
@@ -225,12 +232,15 @@ def write_clockify_csv(
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
-        description="Convert `last` output to Clockify timesheet CSV."
+        description="Convert `last` output to a timesheet CSV (Start/End + Duration (h))."
     )
     p.add_argument(
         "--email",
-        required=True,
-        help="Workspace user email (must match an active Clockify user).",
+        default=None,
+        help=(
+            "If set, add an Email column first (e.g. for Clockify import). "
+            "Must match an active workspace user when importing there."
+        ),
     )
     p.add_argument(
         "--user",
@@ -270,17 +280,17 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument(
         "--date-format",
         default="%m/%d/%Y",
-        help="strftime for Start date (default: %%m/%%d/%%Y for Clockify US-style).",
+        help="strftime for date columns (default: %%m/%%d/%%Y).",
     )
     p.add_argument(
         "--time-format",
-        default="%H:%M",
-        help="strftime for Start time (default: %%H:%%M 24h).",
+        default="%I:%M:%S %p",
+        help="strftime for time columns (default: 12h %%I:%%M:%%S %%p).",
     )
     p.add_argument(
-        "--duration-decimal",
+        "--omit-end-datetime",
         action="store_true",
-        help="Write duration as decimal hours instead of H:MM.",
+        help="Omit End Date and End Time columns (keep Start + Duration (h) only).",
     )
     p.add_argument(
         "--project",
@@ -349,13 +359,13 @@ def main(argv: list[str] | None = None) -> int:
 
     out_fp = open(args.output, "w", newline="", encoding="utf-8") if args.output != "-" else sys.stdout
     try:
-        write_clockify_csv(
+        write_timesheet_csv(
             sessions,
             out=out_fp,
             email=args.email,
             date_fmt=args.date_format,
             time_fmt=args.time_format,
-            duration_clock=not args.duration_decimal,
+            omit_end_datetime=args.omit_end_datetime,
             project=args.project,
             client=args.client,
             task=args.task,
